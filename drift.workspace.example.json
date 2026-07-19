@@ -1,0 +1,6 @@
+{
+  "projects": [
+    { "name": "api-usuarios", "codeDir": "./services/usuarios/src", "docsDir": "./services/usuarios/docs" },
+    { "name": "api-pagamentos", "codeDir": "./services/pagamentos/src", "docsDir": "./services/pagamentos/docs" }
+  ]
+}

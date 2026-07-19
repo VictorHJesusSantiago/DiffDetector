@@ -1,0 +1,3 @@
+[
+  { "type": "ENDPOINT_NAO_DOCUMENTADO", "subject": "GET /internal/debug", "reason": "endpoint interno, não deve ser exposto na doc pública" }
+]

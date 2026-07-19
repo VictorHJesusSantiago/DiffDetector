@@ -1,0 +1,7 @@
+{
+  "severityOverrides": {
+    "ENV_VAR_NAO_DOCUMENTADA": "media"
+  },
+  "renameDetectionMaxDistance": 3,
+  "disabledTypes": []
+}
