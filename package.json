@@ -1,0 +1,36 @@
+{
+  "name": "doc-drift-detector",
+  "version": "1.0.0",
+  "description": "Detector de drift entre documentação (README/runbooks/wikis) e o sistema real (código/infraestrutura).",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "drift": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/api/server.ts",
+    "scan": "tsx src/cli/index.ts scan",
+    "cli": "tsx src/cli/index.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "fast-glob": "^3.3.2",
+    "pg": "^8.13.1",
+    "typescript": "^5.6.3",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.4"
+  }
+}
