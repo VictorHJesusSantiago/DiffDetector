@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.local
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.vscode/
+.idea/
+/tmp/
+.drift-cache.json
+test/.tmp-drift-cache.json
+drift-dashboard.html
