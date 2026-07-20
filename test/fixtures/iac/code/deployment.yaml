@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: myapp:latest
+          env:
+            - name: REDIS_HOST
+              value: redis
+            - name: LOG_LEVEL
+              value: info
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  FEATURE_FLAG_X: "true"
