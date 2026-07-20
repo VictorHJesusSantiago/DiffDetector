@@ -1,0 +1,4 @@
+service OrderService {
+  rpc CreateOrder (OrderRequest) returns (OrderReply);
+  rpc CancelOrder (CancelRequest) returns (CancelReply);
+}
