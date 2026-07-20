@@ -1,0 +1,8 @@
+type Query {
+  getUser(id: ID!): User
+  listOrders: [Order]
+}
+
+type Mutation {
+  createOrder(input: OrderInput!): Order
+}
