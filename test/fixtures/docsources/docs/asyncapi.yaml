@@ -1,0 +1,11 @@
+asyncapi: 2.0.0
+info:
+  title: Eventos de pedidos
+  version: "1.0"
+channels:
+  order.created:
+    subscribe:
+      summary: Emitido quando um pedido é criado
+  order.cancelled:
+    subscribe:
+      summary: Emitido quando um pedido é cancelado
