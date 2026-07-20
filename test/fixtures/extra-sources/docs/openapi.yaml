@@ -1,0 +1,13 @@
+openapi: 3.0.0
+info:
+  title: API de exemplo
+  version: "1.0"
+paths:
+  /api/orders:
+    get:
+      summary: Lista pedidos
+    post:
+      summary: Cria pedido
+  /api/orders/{id}:
+    delete:
+      summary: Remove pedido
