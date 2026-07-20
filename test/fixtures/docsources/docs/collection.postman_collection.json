@@ -1,0 +1,18 @@
+{
+  "info": { "name": "API de exemplo" },
+  "item": [
+    {
+      "name": "Lista pedidos",
+      "request": { "method": "GET", "url": { "raw": "https://api.example.com/api/orders", "path": ["api", "orders"] } }
+    },
+    {
+      "name": "Grupo de pedidos",
+      "item": [
+        {
+          "name": "Cria pedido",
+          "request": { "method": "POST", "url": { "raw": "https://api.example.com/api/orders", "path": ["api", "orders"] } }
+        }
+      ]
+    }
+  ]
+}
