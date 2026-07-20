@@ -1,0 +1,6 @@
+services:
+  web:
+    image: node:20-alpine
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CACHE_TTL_SECONDS=60
