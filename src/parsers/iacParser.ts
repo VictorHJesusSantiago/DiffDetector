@@ -1,35 +1,29 @@
-import { readFile } from "node:fs/promises";
-import fg from "fast-glob";
 import { parse as parseYaml } from "yaml";
 import type { CodeEnvVar } from "../core/types.js";
+import type { ScanSource } from "../core/scanSource.js";
 
-const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**", "**/.terraform/**"];
+const ENV_VAR_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+const COMPOSE_BASENAME_RE = /^(docker-)?compose.*\.ya?ml$/i;
 
-function lineOf(content: string, index: number): number {
-  return content.slice(0, index).split("\n").length;
-}
-
-async function readSafe(path: string): Promise<string | null> {
+function parseYamlOrNull<T>(raw: string): T | null {
   try {
-    return await readFile(path, "utf-8");
+    return parseYaml(raw) as T;
   } catch {
+    // YAML inválido é conteúdo de terceiro malformado, não erro de configuração deste programa.
     return null;
   }
 }
 
 /** Terraform: `variable "X" { ... }` — tratado como configuração que a doc de infra deveria descrever. */
-export async function parseTerraformVariables(rootDir: string): Promise<CodeEnvVar[]> {
-  const files = await fg("**/*.tf", { cwd: rootDir, ignore: DEFAULT_IGNORE });
-  const envVars: CodeEnvVar[] = [];
-  const re = /variable\s+"([a-zA-Z0-9_\-]+)"\s*\{/g;
-  for (const relFile of files) {
-    const content = await readSafe(`${rootDir}/${relFile}`);
-    if (!content) continue;
-    for (const match of content.matchAll(re)) {
-      envVars.push({ name: match[1].toUpperCase(), file: relFile, line: lineOf(content, match.index ?? 0) });
+export async function parseTerraformVariables(source: ScanSource): Promise<CodeEnvVar[]> {
+  const re = /variable\s+"([a-zA-Z0-9_-]+)"\s*\{/g;
+  return source.collect<CodeEnvVar>("terraform", { extensions: ["tf"] }, (file) => {
+    const envVars: CodeEnvVar[] = [];
+    for (const match of file.content.matchAll(re)) {
+      envVars.push({ name: match[1].toUpperCase(), file: file.relPath, line: file.lines.lineAt(match.index) });
     }
-  }
-  return envVars;
+    return envVars;
+  });
 }
 
 interface K8sManifest {
@@ -42,73 +36,74 @@ interface K8sManifest {
 }
 
 /** Kubernetes: `env: - name: X` em Deployments/Pods, e chaves de ConfigMap/Secret (`data:`). */
-export async function parseKubernetesEnvVars(rootDir: string): Promise<CodeEnvVar[]> {
-  const files = await fg("**/*.{yaml,yml}", {
-    cwd: rootDir,
-    ignore: [...DEFAULT_IGNORE, "**/docker-compose*.yml", "**/docker-compose*.yaml"],
-  });
-  const envVars: CodeEnvVar[] = [];
-  for (const relFile of files) {
-    const content = await readSafe(`${rootDir}/${relFile}`);
-    if (!content) continue;
-    let docs: K8sManifest[];
-    try {
-      docs = content
+export async function parseKubernetesEnvVars(source: ScanSource): Promise<CodeEnvVar[]> {
+  return source.collect<CodeEnvVar>(
+    "kubernetes",
+    {
+      extensions: ["yaml", "yml"],
+      where: (entry) => !COMPOSE_BASENAME_RE.test(entry.basename),
+    },
+    (file) => {
+      const envVars: CodeEnvVar[] = [];
+      // Cada documento YAML é parseado isoladamente: um manifesto inválido no meio de um
+      // arquivo multi-documento não pode descartar os manifestos válidos ao redor dele.
+      const docs = file.content
         .split(/^---\s*$/m)
-        .map((chunk) => parseYaml(chunk) as K8sManifest)
-        .filter((d): d is K8sManifest => !!d && typeof d === "object");
-    } catch {
-      continue;
-    }
-    for (const doc of docs) {
-      if (!doc.kind) continue;
-      const containers =
-        doc.spec?.template?.spec?.containers ?? doc.spec?.containers ?? [];
-      for (const container of containers) {
-        for (const envEntry of container.env ?? []) {
-          if (envEntry.name && /^[A-Z][A-Z0-9_]*$/.test(envEntry.name)) {
-            envVars.push({ name: envEntry.name, file: relFile, line: 1 });
+        .map((chunk) => parseYamlOrNull<K8sManifest>(chunk))
+        .filter((doc): doc is K8sManifest => !!doc && typeof doc === "object");
+
+      for (const doc of docs) {
+        if (!doc.kind) continue;
+        const containers = doc.spec?.template?.spec?.containers ?? doc.spec?.containers ?? [];
+        for (const container of containers) {
+          for (const envEntry of container.env ?? []) {
+            if (envEntry.name && ENV_VAR_NAME_RE.test(envEntry.name)) {
+              envVars.push({ name: envEntry.name, file: file.relPath, line: 1 });
+            }
+          }
+        }
+        if ((doc.kind === "ConfigMap" || doc.kind === "Secret") && doc.data) {
+          for (const key of Object.keys(doc.data)) {
+            if (ENV_VAR_NAME_RE.test(key)) envVars.push({ name: key, file: file.relPath, line: 1 });
           }
         }
       }
-      if ((doc.kind === "ConfigMap" || doc.kind === "Secret") && doc.data) {
-        for (const key of Object.keys(doc.data)) {
-          if (/^[A-Z][A-Z0-9_]*$/.test(key)) envVars.push({ name: key, file: relFile, line: 1 });
-        }
-      }
-    }
-  }
-  return envVars;
+      return envVars;
+    },
+  );
 }
 
-/** CI/CD: variáveis/secrets referenciados em GitHub Actions (`${{ secrets.X }}`/`env:`) e GitLab CI (`variables:`). */
-export async function parseCiCdEnvVars(rootDir: string): Promise<CodeEnvVar[]> {
-  const files = await fg([".github/workflows/*.{yml,yaml}", "**/.gitlab-ci.yml"], {
-    cwd: rootDir,
-    ignore: DEFAULT_IGNORE,
-    dot: true,
-  });
-  const envVars: CodeEnvVar[] = [];
-  const secretsRe = /\$\{\{\s*secrets\.([A-Z][A-Z0-9_]*)\s*\}\}/g;
-  const envBlockRe = /^\s*([A-Z][A-Z0-9_]*)\s*:/gm;
+const CI_PATH_RE = /(^|\/)(\.github\/workflows\/[^/]+\.ya?ml|\.gitlab-ci\.yml)$/;
+const SECRETS_RE = /\$\{\{\s*secrets\.([A-Z][A-Z0-9_]*)\s*\}\}/g;
+const ENV_BLOCK_RE = /^\s*([A-Z][A-Z0-9_]*)\s*:/gm;
 
-  for (const relFile of files) {
-    const content = await readSafe(`${rootDir}/${relFile}`);
-    if (!content) continue;
-    for (const match of content.matchAll(secretsRe)) {
-      envVars.push({ name: match[1], file: relFile, line: lineOf(content, match.index ?? 0) });
-    }
-    const envSectionMatch = content.match(/^\s*env:\s*\n((?:\s+[A-Z][A-Z0-9_]*:.*\n?)+)/m);
-    if (envSectionMatch) {
-      for (const match of envSectionMatch[1].matchAll(envBlockRe)) {
-        envVars.push({ name: match[1], file: relFile, line: lineOf(content, (envSectionMatch.index ?? 0) + (match.index ?? 0)) });
+/** CI/CD: variáveis/secrets referenciados em GitHub Actions (`${{ secrets.X }}`/`env:`) e GitLab CI (`variables:`). */
+export async function parseCiCdEnvVars(source: ScanSource): Promise<CodeEnvVar[]> {
+  const envVars = await source.collect<CodeEnvVar>(
+    "cicd",
+    { pathPattern: CI_PATH_RE, includeDotPaths: true },
+    (file) => {
+      const found: CodeEnvVar[] = [];
+      for (const match of file.content.matchAll(SECRETS_RE)) {
+        found.push({ name: match[1], file: file.relPath, line: file.lines.lineAt(match.index) });
       }
-    }
-  }
+      const envSection = /^\s*env:\s*\n((?:\s+[A-Z][A-Z0-9_]*:.*\n?)+)/m.exec(file.content);
+      if (envSection) {
+        for (const match of envSection[1].matchAll(ENV_BLOCK_RE)) {
+          found.push({
+            name: match[1],
+            file: file.relPath,
+            line: file.lines.lineAt(envSection.index + match.index),
+          });
+        }
+      }
+      return found;
+    },
+  );
   return dedupeByName(envVars);
 }
 
-function dedupeByName(items: CodeEnvVar[]): CodeEnvVar[] {
+function dedupeByName(items: readonly CodeEnvVar[]): CodeEnvVar[] {
   const map = new Map<string, CodeEnvVar>();
   for (const item of items) if (!map.has(item.name)) map.set(item.name, item);
   return [...map.values()];
