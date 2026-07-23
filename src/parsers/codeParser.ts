@@ -1,14 +1,14 @@
-import { readFile } from "node:fs/promises";
-import fg from "fast-glob";
 import type { CodeEndpoint, CodeEnvVar, CodeFacts, HttpMethod } from "../core/types.js";
-import type { ParseCache } from "../core/parseCache.js";
+import type { ScanSource, SourceFile } from "../core/scanSource.js";
 import { parseWithAst } from "./tsAstParser.js";
 
 const AST_EXTENSIONS = new Set(["js", "jsx", "ts", "tsx", "mjs", "cjs"]);
-
-const DEFAULT_IGNORE = ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**", "**/coverage/**"];
-
 const CODE_EXTENSIONS = ["js", "jsx", "ts", "tsx", "mjs", "cjs", "py"];
+
+interface FileFacts {
+  endpoints: CodeEndpoint[];
+  envVars: CodeEnvVar[];
+}
 
 function normalizePath(rawPath: string): string {
   let p = rawPath.trim();
@@ -20,17 +20,13 @@ function normalizePath(rawPath: string): string {
   return p;
 }
 
-function lineOf(content: string, index: number): number {
-  return content.slice(0, index).split("\n").length;
-}
-
-function parseFileContent(relFile: string, content: string): { endpoints: CodeEndpoint[]; envVars: CodeEnvVar[] } {
-  const ext = relFile.split(".").pop() ?? "";
+export function parseFileContent(file: SourceFile): FileFacts {
+  const extension = file.relPath.split(".").pop() ?? "";
 
   // Para JS/TS, usamos a árvore sintática real (typescript compiler API) como fonte primária:
   // não é enganado por comentários, strings dentro de outras expressões, ou formatação incomum.
-  if (AST_EXTENSIONS.has(ext)) {
-    return parseWithAst(relFile, content);
+  if (AST_EXTENSIONS.has(extension.toLowerCase())) {
+    return parseWithAst(file.relPath, file.content);
   }
 
   // Python (sem AST disponível aqui): rotas Flask/FastAPI e variáveis de ambiente via regex.
@@ -39,63 +35,35 @@ function parseFileContent(relFile: string, content: string): { endpoints: CodeEn
 
   const pyRouteRe =
     /@(?:app|router|blueprint|bp)\.(get|post|put|patch|delete|options|head)\s*\(\s*(['"])([^'"]+)\2/gi;
-  for (const match of content.matchAll(pyRouteRe)) {
+  for (const match of file.content.matchAll(pyRouteRe)) {
     endpoints.push({
       method: match[1].toUpperCase() as HttpMethod,
       path: normalizePath(match[3]),
-      file: relFile,
-      line: lineOf(content, match.index ?? 0),
+      file: file.relPath,
+      line: file.lines.lineAt(match.index),
     });
   }
 
   const pyEnvRe = /os\.(?:environ\.get|getenv|environ\[)\s*\(?\s*['"]([A-Z][A-Z0-9_]*)['"]/g;
-  for (const match of content.matchAll(pyEnvRe)) {
-    envVars.push({ name: match[1], file: relFile, line: lineOf(content, match.index ?? 0) });
+  for (const match of file.content.matchAll(pyEnvRe)) {
+    envVars.push({ name: match[1], file: file.relPath, line: file.lines.lineAt(match.index) });
   }
 
   return { endpoints, envVars };
 }
 
-export async function parseCodeDirectory(codeDir: string, cache?: ParseCache): Promise<CodeFacts> {
-  const files = await fg(`**/*.{${CODE_EXTENSIONS.join(",")}}`, {
-    cwd: codeDir,
-    ignore: DEFAULT_IGNORE,
-    absolute: false,
-  });
+export async function parseCodeDirectory(source: ScanSource): Promise<CodeFacts> {
+  const perFile = await source.collect<FileFacts>("codeParser", { extensions: CODE_EXTENSIONS }, (file) => [
+    parseFileContent(file),
+  ]);
 
-  const endpoints: CodeEndpoint[] = [];
-  const envVars: CodeEnvVar[] = [];
-
-  for (const relFile of files) {
-    const fullPath = `${codeDir}/${relFile}`;
-
-    if (cache) {
-      const cached = await cache.get(fullPath, relFile);
-      if (cached) {
-        endpoints.push(...cached.endpoints);
-        envVars.push(...cached.envVars);
-        continue;
-      }
-    }
-
-    let content: string;
-    try {
-      content = await readFile(fullPath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    const facts = parseFileContent(relFile, content);
-    endpoints.push(...facts.endpoints);
-    envVars.push(...facts.envVars);
-
-    if (cache) await cache.set(fullPath, relFile, facts);
-  }
+  const endpoints = perFile.flatMap((facts) => facts.endpoints);
+  const envVars = perFile.flatMap((facts) => facts.envVars);
 
   return { endpoints: dedupeEndpoints(endpoints), envVars: dedupeEnvVars(envVars) };
 }
 
-function dedupeEndpoints(items: CodeEndpoint[]): CodeEndpoint[] {
+function dedupeEndpoints(items: readonly CodeEndpoint[]): CodeEndpoint[] {
   const map = new Map<string, CodeEndpoint>();
   for (const item of items) {
     const key = `${item.method} ${item.path}`;
@@ -104,7 +72,7 @@ function dedupeEndpoints(items: CodeEndpoint[]): CodeEndpoint[] {
   return [...map.values()];
 }
 
-function dedupeEnvVars(items: CodeEnvVar[]): CodeEnvVar[] {
+function dedupeEnvVars(items: readonly CodeEnvVar[]): CodeEnvVar[] {
   const map = new Map<string, CodeEnvVar>();
   for (const item of items) {
     if (!map.has(item.name)) map.set(item.name, item);
