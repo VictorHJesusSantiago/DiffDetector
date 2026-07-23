@@ -75,10 +75,19 @@ Cada scan é persistido no Postgres e reconciliado com o scan anterior: achados 
 
 ```bash
 npm install
-cp .env.example .env      # ajuste DATABASE_URL se necessário
+cp .env.example .env      # DATABASE_URL é obrigatória (não há valor padrão embutido)
 docker compose up -d      # sobe o Postgres em localhost:5432
 npm run db:migrate        # cria as tabelas
 ```
+
+### Variáveis de ambiente
+
+| Variável | Obrigatória | Descrição |
+| --- | --- | --- |
+| `DATABASE_URL` | sim, para persistir | String de conexão do Postgres. Sem ela, comandos que gravam ou leem histórico falham imediatamente com mensagem explícita — não há fallback para `localhost`. Use `--no-save` para rodar scans sem banco. |
+| `PORT` | não (3000) | Porta da API. |
+| `DRIFT_ALLOWED_ROOTS` | não (cwd) | Diretórios que a API pode escanear, separados por vírgula. Ver "Segurança da API". |
+| `DRIFT_API_TOKEN` | não | Quando definida, todas as rotas exceto `/health` exigem `Authorization: Bearer <token>`. |
 
 ## Uso via CLI
 
@@ -159,23 +168,45 @@ Exemplo:
 ```bash
 curl -X POST http://localhost:3000/scans \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DRIFT_API_TOKEN" \
   -d '{"codeDir": "./meu-servico/src", "docsDir": "./meu-servico/docs"}'
 ```
+
+### Segurança da API
+
+`POST /scans` recebe caminhos do cliente e o relatório devolve **trechos das linhas** dos
+arquivos encontrados. Duas proteções existem por causa disso:
+
+- **`DRIFT_ALLOWED_ROOTS`** define quais diretórios podem ser escaneados. Caminhos fora dessas
+  raízes — inclusive via `../` ou link simbólico, que são resolvidos antes da checagem — recebem
+  `403`. Sem a variável, o padrão é apenas o diretório de trabalho do processo.
+- **`DRIFT_API_TOKEN`**, quando definida, exige `Authorization: Bearer <token>` (comparado em
+  tempo constante) em todas as rotas exceto `/health`. Enquanto não estiver definida, a API não
+  tem autenticação e **só deve ser exposta em loopback**; ela avisa isso na inicialização.
+
+Erros seguem [RFC 7807](https://datatracker.ietf.org/doc/html/rfc7807)
+(`application/problem+json`); detalhes internos ficam no log do servidor e nunca na resposta.
 
 ## Testes
 
 ```bash
-npm test
+npm test              # suíte completa
+npm run typecheck     # tipa src + test
+npm run test:coverage # com gate de cobertura (70% linhas/statements/funções, 60% branches)
+npm run verify        # typecheck + cobertura + npm audit (o mesmo que o CI roda)
 ```
 
-46 testes cobrindo todos os parsers (AST real de JS/TS, Python, Java, Go, Ruby, PHP, C#, Rust,
+71 testes cobrindo todos os parsers (AST real de JS/TS, Python, Java, Go, Ruby, PHP, C#, Rust,
 GraphQL, gRPC, filas, CLI, WebSocket, DB schema, roles, Terraform, Kubernetes, CI/CD, Postman,
 AsyncAPI, JSDoc embutido, HTML, dependências), o motor de drift completo (quase-drift, método
 divergente, doc órfã, doc duplicada, dependência divergente, recursos extras), exportadores,
 cache de parsing, dashboard, gerador de stub e config/ignore list — todos rodam sem dependências
 externas. O teste de [repository.test.ts](test/repository.test.ts) exercita a reconciliação de
 achados (novo/resolvido) contra um Postgres real — se `DATABASE_URL` não estiver acessível, ele
-avisa e é pulado.
+avisa e é pulado (no CI, um Postgres efêmero é provisionado justamente para que ele rode).
+
+O pipeline em [.github/workflows/ci.yml](.github/workflows/ci.yml) roda typecheck, testes com
+gate de cobertura, build, `npm audit` e um auto-scan da ferramenta sobre a própria documentação.
 
 ## Cobertura de escopo
 
