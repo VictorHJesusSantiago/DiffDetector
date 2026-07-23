@@ -1,3 +1,7 @@
+-- Estado inicial do schema, equivalente ao antigo src/db/schema.sql.
+-- Bancos criados antes das migrações versionadas recebem esta versão como baseline (marcada
+-- como aplicada sem reexecução), porque as tabelas já existem neles.
+
 CREATE TABLE IF NOT EXISTS scans (
   id BIGSERIAL PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
