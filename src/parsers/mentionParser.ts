@@ -1,55 +1,75 @@
-import { readFile } from "node:fs/promises";
-import fg from "fast-glob";
-import type { ExtraCodeResource, ExtraDocResource } from "../core/types.js";
+import type { ExtraCodeResource, ExtraDocResource, ExtraResourceKind } from "../core/types.js";
+import type { ScanSource } from "../core/scanSource.js";
 
-const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**"];
+interface SubjectMatcher {
+  readonly subject: string;
+  readonly kinds: readonly ExtraResourceKind[];
+  readonly pattern: RegExp;
+}
 
-function lineOf(content: string, index: number): number {
-  return content.slice(0, index).split("\n").length;
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
- * Varre os arquivos Markdown de `docsDir` procurando por menções textuais (entre crases ou
- * como palavra isolada) dos subjects passados em `resources`. Usado para decidir se um
- * recurso extra do código (GraphQL, gRPC, fila, CLI, WebSocket, tabela, role) foi documentado,
- * sem precisar de um parser de doc dedicado por tipo de recurso.
+ * Pré-compila um matcher por subject distinto. Antes, a RegExp era reconstruída dentro do laço
+ * de arquivos (arquivos × subjects compilações); agora é compilada uma vez por subject.
  */
-export async function findDocMentions(docsDir: string, resources: ExtraCodeResource[]): Promise<ExtraDocResource[]> {
-  if (resources.length === 0) return [];
-
-  const uniqueSubjects = [...new Set(resources.map((r) => r.subject))];
-  const files = await fg("**/*.{md,mdx}", { cwd: docsDir, ignore: DEFAULT_IGNORE });
-
-  const kindsBySubject = new Map<string, Set<ExtraCodeResource["kind"]>>();
-  for (const r of resources) {
-    const set = kindsBySubject.get(r.subject) ?? new Set();
-    set.add(r.kind);
-    kindsBySubject.set(r.subject, set);
+function buildMatchers(resources: readonly ExtraCodeResource[]): SubjectMatcher[] {
+  const kindsBySubject = new Map<string, Set<ExtraResourceKind>>();
+  for (const resource of resources) {
+    const kinds = kindsBySubject.get(resource.subject) ?? new Set<ExtraResourceKind>();
+    kinds.add(resource.kind);
+    kindsBySubject.set(resource.subject, kinds);
   }
 
+  return [...kindsBySubject].map(([subject, kinds]) => ({
+    subject,
+    kinds: [...kinds],
+    pattern: new RegExp(`(?:\`${escapeRegExp(subject)}\`|\\b${escapeRegExp(subject)}\\b)`),
+  }));
+}
+
+/**
+ * Varre os arquivos Markdown procurando menções textuais (entre crases ou como palavra isolada)
+ * dos subjects passados em `resources`. Usado para decidir se um recurso extra do código
+ * (GraphQL, gRPC, fila, CLI, WebSocket, tabela, role) foi documentado, sem precisar de um
+ * parser de doc dedicado por tipo de recurso.
+ *
+ * Só a primeira menção de cada (arquivo, subject, kind) é registrada: o consumidor pergunta
+ * "está documentado?", não "quantas vezes aparece?".
+ *
+ * Não usa o cache de parsing porque o resultado depende de `resources`, que varia entre scans —
+ * uma entrada de cache indexada só por (parser, arquivo) devolveria menções de uma lista de
+ * subjects antiga.
+ */
+export async function findDocMentions(
+  source: ScanSource,
+  resources: readonly ExtraCodeResource[],
+): Promise<ExtraDocResource[]> {
+  if (resources.length === 0) return [];
+
+  const matchers = buildMatchers(resources);
   const mentions: ExtraDocResource[] = [];
-  for (const relFile of files) {
-    let content: string;
-    try {
-      content = await readFile(`${docsDir}/${relFile}`, "utf-8");
-    } catch {
-      continue;
-    }
-    for (const subject of uniqueSubjects) {
-      const escaped = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp(`(?:\`${escaped}\`|\\b${escaped}\\b)`, "g");
-      for (const match of content.matchAll(re)) {
-        for (const kind of kindsBySubject.get(subject) ?? []) {
-          mentions.push({
-            kind,
-            subject,
-            file: relFile,
-            line: lineOf(content, match.index ?? 0),
-            context: content.split("\n")[lineOf(content, match.index ?? 0) - 1]?.trim().slice(0, 200) ?? "",
-          });
-        }
+
+  for (const entry of source.select({ extensions: ["md", "mdx"] })) {
+    const file = await source.read(entry);
+    if (!file) continue;
+
+    for (const matcher of matchers) {
+      const match = matcher.pattern.exec(file.content);
+      if (!match) continue;
+      for (const kind of matcher.kinds) {
+        mentions.push({
+          kind,
+          subject: matcher.subject,
+          file: file.relPath,
+          line: file.lines.lineAt(match.index),
+          context: file.lines.contextAt(match.index),
+        });
       }
     }
   }
+
   return mentions;
 }
