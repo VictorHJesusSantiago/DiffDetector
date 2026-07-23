@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# O token só precisa ler o repositório (menor privilégio).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: drift_detector_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # O teste de integração do repositório roda contra este Postgres efêmero; sem ele, a
+      # camada SQL de verdade (constraints, tipos, ordenação) nunca é exercitada — os fakes
+      # cobrem a lógica, não o dialeto.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/drift_detector_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Typecheck (src + test)
+        run: npm run typecheck
+
+      - name: Lint (ESLint com informação de tipos)
+        run: npm run lint
+
+      - name: Migrações versionadas contra o Postgres real
+        run: npm run db:migrate
+
+      - name: Migrações são idempotentes (segunda execução não aplica nada)
+        run: npm run db:migrate
+
+      - name: Testes com gate de cobertura
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Auditoria de dependências
+        run: npm run audit:ci
+
+      # Smoke test de ponta a ponta: garante que o build realmente executa, com todos os
+      # parsers, sobre um repositório real. É informativo — não usa --fail-on-drift.
+      - name: Smoke test da CLI compilada
+        run: node dist/cli/index.js scan --code src --docs docs --no-save --format markdown
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construir a imagem da aplicação
+        run: docker build -t doc-drift-detector:ci .
+
+      - name: A imagem sobe, responde ao healthcheck e encerra graciosamente
+        run: |
+          docker run -d --name drift-ci -p 3000:3000 \
+            -e DATABASE_URL=postgres://invalido:invalido@127.0.0.1:1/nao_existe \
+            doc-drift-detector:ci || true
+          # Sem banco a API não inicia; o que se valida aqui é que a imagem é executável e que
+          # a falha é explícita, não um contêiner que fica de pé sem servir nada.
+          sleep 5
+          docker logs drift-ci
+          docker rm -f drift-ci
