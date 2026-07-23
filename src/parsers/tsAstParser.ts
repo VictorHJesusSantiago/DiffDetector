@@ -42,7 +42,7 @@ export function parseWithAst(
       const methodName = node.expression.name.text.toLowerCase();
       const receiverText = node.expression.expression.getText(sourceFile);
       if (HTTP_METHOD_NAMES.has(methodName) && ROUTER_RECEIVER_RE.test(receiverText)) {
-        const firstArg = node.arguments[0];
+        const firstArg = node.arguments.at(0);
         if (firstArg && ts.isStringLiteralLike(firstArg)) {
           endpoints.push({
             method: methodName.toUpperCase() as HttpMethod,
@@ -55,7 +55,7 @@ export function parseWithAst(
 
       // fastify.route({ method: 'GET', url: '/x' })
       if (methodName === "route" && ROUTER_RECEIVER_RE.test(receiverText)) {
-        const firstArg = node.arguments[0];
+        const firstArg = node.arguments.at(0);
         if (firstArg && ts.isObjectLiteralExpression(firstArg)) {
           let routeMethod: string | undefined;
           let routePath: string | undefined;

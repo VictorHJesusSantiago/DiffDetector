@@ -1,10 +1,9 @@
-import { readFile } from "node:fs/promises";
-import fg from "fast-glob";
 import type { DocEndpointRef, HttpMethod } from "../core/types.js";
+import type { ScanSource } from "../core/scanSource.js";
 import { normalizePath } from "./codeParser.js";
 
 const HTTP_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
-const DEFAULT_IGNORE = ["**/node_modules/**", "**/.git/**"];
+const POSTMAN_BASENAME_RE = /\.postman_collection\.json$/i;
 
 interface PostmanUrl {
   raw?: string;
@@ -33,6 +32,7 @@ function extractPath(url: PostmanRequest["url"]): string | null {
     try {
       return new URL(url).pathname;
     } catch {
+      // URL relativa (sem esquema): usa o valor como caminho.
       return url.startsWith("/") ? url : `/${url}`;
     }
   }
@@ -41,13 +41,14 @@ function extractPath(url: PostmanRequest["url"]): string | null {
     try {
       return new URL(url.raw).pathname;
     } catch {
+      // `raw` pode conter variáveis do Postman ({{baseUrl}}) e não formar uma URL válida.
       return null;
     }
   }
   return null;
 }
 
-function walkItems(items: PostmanItem[] | undefined, relFile: string, out: DocEndpointRef[]): void {
+function walkItems(items: PostmanItem[] | undefined, relPath: string, out: DocEndpointRef[]): void {
   for (const item of items ?? []) {
     if (item.request) {
       const method = (item.request.method ?? "").toUpperCase() as HttpMethod;
@@ -56,34 +57,28 @@ function walkItems(items: PostmanItem[] | undefined, relFile: string, out: DocEn
         out.push({
           method,
           path: normalizePath(path),
-          file: relFile,
+          file: relPath,
           line: 1,
           context: `${item.name ?? ""} (Postman Collection)`,
         });
       }
     }
-    if (item.item) walkItems(item.item, relFile, out);
+    if (item.item) walkItems(item.item, relPath, out);
   }
 }
 
 /** Trata Postman Collections (.postman_collection.json) como fonte de endpoints documentados. */
-export async function parsePostmanCollections(docsDir: string): Promise<DocEndpointRef[]> {
-  const files = await fg("**/*.postman_collection.json", { cwd: docsDir, ignore: DEFAULT_IGNORE });
-  const refs: DocEndpointRef[] = [];
-  for (const relFile of files) {
-    let raw: string;
-    try {
-      raw = await readFile(`${docsDir}/${relFile}`, "utf-8");
-    } catch {
-      continue;
-    }
+export async function parsePostmanCollections(source: ScanSource): Promise<DocEndpointRef[]> {
+  return source.collect<DocEndpointRef>("postman", { basenamePattern: POSTMAN_BASENAME_RE }, (file) => {
     let collection: PostmanCollection;
     try {
-      collection = JSON.parse(raw);
+      collection = JSON.parse(file.content) as PostmanCollection;
     } catch {
-      continue;
+      // Collection malformada: nada a extrair.
+      return [];
     }
-    walkItems(collection.item, relFile, refs);
-  }
-  return refs;
+    const refs: DocEndpointRef[] = [];
+    walkItems(collection.item, file.relPath, refs);
+    return refs;
+  });
 }
