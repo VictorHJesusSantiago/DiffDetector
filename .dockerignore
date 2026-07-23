@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+test
+docs
+.git
+.github
+*.log
+.env
+.env.local
+.drift-cache.json
+drift-dashboard.html
