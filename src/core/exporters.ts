@@ -1,3 +1,4 @@
+import { escapeHtml, escapeXml } from "./html.js";
 import type { ScanReport } from "./types.js";
 
 export type ReportFormat = "text" | "json" | "markdown" | "html" | "csv" | "junit";
@@ -37,14 +38,19 @@ function exportText(report: ScanReport): string {
     return lines.join("\n");
   }
   lines.push(`\n${report.findings.length} problema(s) de drift encontrado(s):\n`);
-  for (const f of report.findings) {
-    lines.push(`[${f.severity.toUpperCase()}] ${f.type} — ${f.subject}`);
-    lines.push(`  ${f.message}`);
-    for (const ref of f.docRefs) lines.push(`  doc: ${ref.file}:${ref.line} -> "${ref.context}"`);
-    for (const ref of f.codeRefs) lines.push(`  code: ${ref.file}:${ref.line}`);
+  for (const finding of report.findings) {
+    lines.push(`[${finding.severity.toUpperCase()}] ${finding.type} — ${finding.subject}`);
+    lines.push(`  ${finding.message}`);
+    for (const ref of finding.docRefs) lines.push(`  doc: ${ref.file}:${ref.line} -> "${ref.context}"`);
+    for (const ref of finding.codeRefs) lines.push(`  code: ${ref.file}:${ref.line}`);
     lines.push("");
   }
   return lines.join("\n");
+}
+
+function escapeMarkdownCell(value: string): string {
+  // Além do pipe (que quebraria a coluna), quebras de linha encerrariam a linha da tabela.
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
 function exportMarkdown(report: ScanReport): string {
@@ -55,9 +61,7 @@ function exportMarkdown(report: ScanReport): string {
   lines.push(`- **Código:** \`${report.codeDir}\``);
   lines.push(`- **Docs:** \`${report.docsDir}\``);
   lines.push(`- **Cobertura de documentação:** ${report.coverageScore}%`);
-  lines.push(
-    `- **Endpoints:** ${report.totalCodeEndpoints} no código / ${report.totalDocEndpoints} na doc`,
-  );
+  lines.push(`- **Endpoints:** ${report.totalCodeEndpoints} no código / ${report.totalDocEndpoints} na doc`);
   lines.push(`- **Env vars:** ${report.totalCodeEnvVars} no código / ${report.totalDocEnvVars} na doc`);
   lines.push("");
 
@@ -70,20 +74,42 @@ function exportMarkdown(report: ScanReport): string {
   lines.push("");
   lines.push("| Severidade | Tipo | Assunto | Mensagem |");
   lines.push("| --- | --- | --- | --- |");
-  for (const f of report.findings) {
-    lines.push(`| ${f.severity} | ${f.type} | \`${f.subject}\` | ${f.message.replace(/\|/g, "\\|")} |`);
+  for (const finding of report.findings) {
+    lines.push(
+      `| ${finding.severity} | ${finding.type} | \`${escapeMarkdownCell(finding.subject)}\` | ${escapeMarkdownCell(finding.message)} |`,
+    );
   }
   return lines.join("\n");
 }
 
+const REPORT_STYLES = `
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fff; --border: #ddd; --head: #f4f4f4;
+          --alta: #fdecea; --media: #fff8e1; --baixa: #f1f8f4; --muted: #555; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #ececec; --bg: #131313; --border: #3a3a3a; --head: #1f1f1f;
+            --alta: #4a1d18; --media: #4a3c12; --baixa: #17361f; --muted: #b0b0b0; }
+  }
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: var(--fg); background: var(--bg); }
+  .table-scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; font-size: 0.9rem; }
+  th { background: var(--head); }
+  caption { text-align: left; padding-bottom: 0.5rem; color: var(--muted); }
+  tr.sev-alta { background: var(--alta); }
+  tr.sev-media { background: var(--media); }
+  tr.sev-baixa { background: var(--baixa); }
+  .summary { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1rem 0; padding: 0; list-style: none; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1rem; }
+`;
+
 function exportHtml(report: ScanReport): string {
   const rows = report.findings
     .map(
-      (f) => `<tr class="sev-${f.severity}">
-  <td>${escapeHtml(f.severity)}</td>
-  <td>${escapeHtml(f.type)}</td>
-  <td><code>${escapeHtml(f.subject)}</code></td>
-  <td>${escapeHtml(f.message)}</td>
+      (finding) => `<tr class="sev-${escapeHtml(finding.severity)}">
+  <td>${escapeHtml(finding.severity)}</td>
+  <td>${escapeHtml(finding.type)}</td>
+  <td><code>${escapeHtml(finding.subject)}</code></td>
+  <td>${escapeHtml(finding.message)}</td>
 </tr>`,
     )
     .join("\n");
@@ -92,32 +118,26 @@ function exportHtml(report: ScanReport): string {
 <html lang="pt-br">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Relatório de Drift — ${escapeHtml(report.createdAt)}</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
-  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; font-size: 0.9rem; }
-  th { background: #f4f4f4; }
-  tr.sev-alta { background: #fdecea; }
-  tr.sev-media { background: #fff8e1; }
-  tr.sev-baixa { background: #f1f8f4; }
-  .summary { display: flex; gap: 1.5rem; flex-wrap: wrap; margin: 1rem 0; }
-  .card { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; }
-</style>
+<style>${REPORT_STYLES}</style>
 </head>
 <body>
   <h1>Relatório de Drift de Documentação</h1>
   <p>${escapeHtml(report.createdAt)} — <code>${escapeHtml(report.codeDir)}</code> vs <code>${escapeHtml(report.docsDir)}</code></p>
-  <div class="summary">
-    <div class="card"><strong>${report.coverageScore}%</strong><br>cobertura de docs</div>
-    <div class="card"><strong>${report.totalCodeEndpoints}/${report.totalDocEndpoints}</strong><br>endpoints (código/doc)</div>
-    <div class="card"><strong>${report.totalCodeEnvVars}/${report.totalDocEnvVars}</strong><br>env vars (código/doc)</div>
-    <div class="card"><strong>${report.findings.length}</strong><br>achados de drift</div>
-  </div>
+  <ul class="summary">
+    <li class="card"><strong>${report.coverageScore}%</strong><br>cobertura de docs</li>
+    <li class="card"><strong>${report.totalCodeEndpoints}/${report.totalDocEndpoints}</strong><br>endpoints (código/doc)</li>
+    <li class="card"><strong>${report.totalCodeEnvVars}/${report.totalDocEnvVars}</strong><br>env vars (código/doc)</li>
+    <li class="card"><strong>${report.findings.length}</strong><br>achados de drift</li>
+  </ul>
+  <div class="table-scroll">
   <table>
-    <thead><tr><th>Severidade</th><th>Tipo</th><th>Assunto</th><th>Mensagem</th></tr></thead>
+    <caption>Achados de drift, ordenados por severidade</caption>
+    <thead><tr><th scope="col">Severidade</th><th scope="col">Tipo</th><th scope="col">Assunto</th><th scope="col">Mensagem</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="4">Nenhum drift encontrado.</td></tr>'}</tbody>
   </table>
+  </div>
 </body>
 </html>`;
 }
@@ -125,39 +145,46 @@ function exportHtml(report: ScanReport): string {
 function exportCsv(report: ScanReport): string {
   const header = "severity,type,subject,message";
   const rows = report.findings.map(
-    (f) => `${f.severity},${f.type},${csvEscape(f.subject)},${csvEscape(f.message)}`,
+    (finding) =>
+      `${finding.severity},${finding.type},${csvEscape(finding.subject)},${csvEscape(finding.message)}`,
   );
   return [header, ...rows].join("\n");
 }
 
+/**
+ * Campos que começam com =, +, - ou @ são interpretados como fórmula por Excel/Sheets ao abrir
+ * o CSV. Como subject e message carregam texto vindo do repositório escaneado, o prefixo é
+ * neutralizado antes da citação (CSV injection).
+ */
 function csvEscape(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+  const neutralized = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  if (/[",\n\r]/.test(neutralized)) return `"${neutralized.replace(/"/g, '""')}"`;
+  return neutralized;
+}
+
+/**
+ * Caracteres de controle não são representáveis em XML 1.0 nem quando escapados: um único byte
+ * desses vindo de um arquivo escaneado deixa o relatório JUnit inteiro ilegível para o CI.
+ */
+// eslint-disable-next-line no-control-regex -- a regra existe para pegar controle acidental; aqui eles sao o alvo
+const XML_CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+
+function stripXmlControlChars(value: string): string {
+  return value.replace(XML_CONTROL_CHARS_RE, " ");
 }
 
 function exportJunit(report: ScanReport): string {
   const testcases = report.findings
-    .map(
-      (f) => `    <testcase classname="${escapeXml(f.type)}" name="${escapeXml(f.subject)}">
-      <failure message="${escapeXml(f.message)}" type="${escapeXml(f.severity)}">${escapeXml(f.message)}</failure>
-    </testcase>`,
-    )
+    .map((finding) => {
+      const message = escapeXml(stripXmlControlChars(finding.message));
+      return `    <testcase classname="${escapeXml(finding.type)}" name="${escapeXml(finding.subject)}">
+      <failure message="${message}" type="${escapeXml(finding.severity)}">${message}</failure>
+    </testcase>`;
+    })
     .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="doc-drift-detector" tests="${report.findings.length}" failures="${report.findings.length}" timestamp="${report.createdAt}">
+<testsuite name="doc-drift-detector" tests="${report.findings.length}" failures="${report.findings.length}" timestamp="${escapeXml(report.createdAt)}">
 ${testcases}
 </testsuite>`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function escapeXml(value: string): string {
-  return escapeHtml(value).replace(/'/g, "&apos;");
 }
